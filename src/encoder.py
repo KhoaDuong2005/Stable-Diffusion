@@ -54,7 +54,7 @@ class VAE_Encoder(nn.Sequential):
             nn.Conv2d(512, 8, kernel_size=3, padding=1),
 
             # batch_size, 8, (height/8, width/8) -> batch_size, 8, (height/8, width/8)
-            nn.Conv2d(8, 8, kernel_size=3, padding=1),
+            nn.Conv2d(8, 8, kernel_size=1, padding=0),
         )
 
     def forward(self, x: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
