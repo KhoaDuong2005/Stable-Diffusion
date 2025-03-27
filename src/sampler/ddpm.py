@@ -7,7 +7,7 @@ class DDPMSampler:
         generator: torch.Generator,
         training_steps = 1000, 
         beta_start: float = 0.00085, 
-        beta_end: float = 0.012
+        beta_end: float = 0.0120,
         ):
 
         self.betas = torch.linspace(beta_start ** 0.5, beta_end ** 0.5, training_steps, dtype=torch.float32) ** 2
@@ -25,7 +25,7 @@ class DDPMSampler:
         #if steps = 50, then timesteps = 999, 999-20, 999-40, 999-60, ..., 0 = 50 steps
 
         step_ratio = self.training_steps // steps
-        timesteps = np.arange(0, self.training_steps, step_ratio)[::-1].copy()
+        timesteps = (np.arange(0, steps) * step_ratio).round()[::-1].copy().astype(np.int64)
         self.timesteps = torch.from_numpy(timesteps)
 
     def _get_previous_timestep(self, timestep: int) -> int:
@@ -82,6 +82,8 @@ class DDPMSampler:
             noise = torch.randn(model_output.shape, generator = self.generator, device=device, dtype=model_output.dtype)
             variance = (self._get_variance(t) ** 0.5) * noise # N(0, 1) -> N(mu, sigma^2)  || X = mu + sigma * Z, Z ~ N(0, 1)
 
+        predicted_previous_sample = predicted_previous_sample + variance
+        
         return predicted_previous_sample
 
 
@@ -104,9 +106,9 @@ class DDPMSampler:
         
         # Z = N(0, 1) -> N(mean, variance) = X
         # X = mean + stdev * Z
-        noise = torch.randn(original_samples.shape, generator=self.generator, device=original_sample.device, dtype=original_samples.dtype)
+        noise = torch.randn(original_samples.shape, generator=self.generator, device=original_samples.device, dtype=original_samples.dtype)
         noisy_samples = (sqrt_alpha_cumprod * original_samples) + (sqrt_one_minus_alpha_cumprod * noise)
-
+\
         return noisy_samples
 
     
