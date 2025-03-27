@@ -25,7 +25,7 @@ def generate(
     tokenizer=None
 ):
     with torch.no_grad():
-        if not (0 <= strength <= 1):
+        if not (0 < strength <= 1):
             raise ValueError("Strength must be between 0 and 1")
         
         # Define to_idle: moves a module to the idle_device if provided, else returns it unchanged.
@@ -68,8 +68,8 @@ def generate(
         to_idle(clip)
 
         if sampler == "ddpm":
-            sampler_obj = DDPMSampler(generator)
-            sampler_obj.set_steps(steps)
+            sampler = DDPMSampler(generator)
+            sampler.set_steps(steps)
         else:
             raise ValueError(f"Unknown/undefined sampler {sampler}")
 
@@ -89,8 +89,8 @@ def generate(
             encoder_noise = torch.randn(latents_shape, generator=generator, device=device)
             latents = encoder(input_image_tensor, encoder_noise)
 
-            sampler_obj.set_strength(strength=strength)
-            latents = sampler_obj.add_noise(latents, sampler_obj.timesteps[0])
+            sampler.set_strength(strength=strength)
+            latents = sampler.add_noise(latents, sampler.timesteps[0])
             to_idle(encoder)
         else:  # txt2img branch
             latents = torch.randn(latents_shape, generator=generator, device=device)
@@ -99,7 +99,7 @@ def generate(
         diffusion.to(device)
 
         # Iterate through timesteps to denoise the latents.
-        for i, timestep in enumerate(tqdm(sampler_obj.timesteps)):
+        for i, timestep in enumerate(tqdm(sampler.timesteps)):
             time_embedding = get_time_embedding(timestep).to(device)
             model_input = latents
             if do_cfg:
@@ -111,7 +111,7 @@ def generate(
             else:
                 model_output = diffusion(model_input, context, time_embedding)
             
-            latents = sampler_obj.step(timestep, latents, model_output)
+            latents = sampler.step(timestep, latents, model_output)
         
         to_idle(diffusion)
 
@@ -131,7 +131,11 @@ def generate(
 def rescale(x, old_range, new_range, clamp=False):
     old_min, old_max = old_range
     new_min, new_max = new_range
-    x = (x - old_min) / (old_max - old_min) * (new_max - new_min) + new_min 
+
+    x -= old_min
+    x *= (new_max - new_min) / (old_max - old_min)
+    x += new_min
+    
     if clamp:
         x = torch.clamp(x, new_min, new_max)
     return x
@@ -141,4 +145,5 @@ def get_time_embedding(timestep):
     # Create time embedding vector of shape (1, 320)
     freqs = torch.pow(10000, -torch.arange(start=0, end=160, dtype=torch.float32) / 160)
     x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
-    return torch.cat([torch.sin(x), torch.cos(x)], dim=-1)
+    return torch.cat([torch.cos(x), torch.sin(x)], dim=-1)
+
