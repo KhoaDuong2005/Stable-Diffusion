@@ -32,7 +32,7 @@ class SelfAttention(nn.Module):
 
         if casual_mask:
             # upper triangular is made up of 1
-            mask = torch.ones_like(weight, dtype=torch.bool).triu(x)
+            mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
 
             weight = weight.masked_fill(mask, -torch.inf)
 
@@ -47,7 +47,7 @@ class SelfAttention(nn.Module):
         output = output.transpose(1, 2)
 
         # (batch_size, seq_len, H, dim / H) -> (batch_size, seq_len, dim)
-        output.reshape(input_shape)
+        output = output.reshape(input_shape)
         
         output = self.out_proj(output)
 
@@ -64,7 +64,7 @@ class CrossAttention(nn.Module):
         self.out_proj = nn.Linear(d_embeddings, d_embeddings, bias=out_proj_bias)
 
         self.n_heads = n_heads
-        self.d_heads = d_embeddings // n_heads
+        self.d_head = d_embeddings // n_heads
     
     def forward(self, x, y):
         # x = (latent) = (batch_size, seq_len_Q, dim_Q)
@@ -72,7 +72,7 @@ class CrossAttention(nn.Module):
         input_shape = x.shape
         batch_size, sequence_length, d_embeddings = input_shape
 
-        interim_shape = (batch_size, -1, self.n_heads, self.d_embeddings)
+        interim_shape = (batch_size, -1, self.n_heads, self.d_head)
 
         q = self.q_proj(x)
 
@@ -80,12 +80,12 @@ class CrossAttention(nn.Module):
         v = self.v_proj(y)
 
         q = q.view(interim_shape).transpose(1, 2)
-        q = k.view(interim_shape).transpose(1, 2)
-        q = v.view(interim_shape).transpose(1, 2)
+        k = k.view(interim_shape).transpose(1, 2)
+        v = v.view(interim_shape).transpose(1, 2)
 
         weight = q @ k.transpose(-2, -1)
 
-        weight /=   math.sqrt(self.d_heads)
+        weight /=   math.sqrt(self.d_head)
 
         weight = F.softmax(weight, dim=-1)
 
