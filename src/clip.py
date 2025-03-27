@@ -57,10 +57,11 @@ class CLIPLayer(nn.Module):
 
 class CLIP(nn.Module):
     def __init__(self):
+        super().__init__()
         self.embedding = CLIPEmbedding(49408, 768, 77) #vocab size, embedding, seq_len
 
         # 12 layers of (num_of_head, embedding)
-        self.layers = nn.Module([CLIPLayer(12, 768) for i in range(12)])
+        self.layers = nn.ModuleList([CLIPLayer(12, 768) for i in range(12)])
 
         self.layernorm = nn.LayerNorm(768)
 
