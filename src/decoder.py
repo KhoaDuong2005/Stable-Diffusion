@@ -46,6 +46,8 @@ class VAE_AttentionBlock(nn.Module):
         # x (batch_size, features, H, W)
         residue = x
 
+        x = self.groupnorm(x)
+
         n, c, h, w = x.shape # n = batch_size | c = channel | h = height | w = width
 
         # batch_size, features, H, W -> batch_size, features, H * W
