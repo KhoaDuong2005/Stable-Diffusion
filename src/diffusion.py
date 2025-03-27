@@ -38,11 +38,11 @@ class UNET_ResidualBlock(nn.Module):
 
         merged = self.groupnorm_merged(merged)
 
+        merged = F.silu(merged)
+
         merged = self.conv_merged(merged)
 
-        merged = merged + self.residual_layer(residue)
-
-        return merged
+        return merged + self.residual_layer(residue)
 
 class UNET_AttentionBlock(nn.Module):
     def __init__(self, n_heads: int, n_embeddings: int, d_prompt=768):
@@ -77,7 +77,7 @@ class UNET_AttentionBlock(nn.Module):
         n, c, h, w = x.shape
 
         # batch_size, features, H, W -> batch_size, features, H * W
-        x = x.view(n, c, h*w)
+        x = x.view((n, c, h * w))
 
         #batch_size, features, H * W -> batch_size, H * W, features
         x = x.transpose(-2, -1)
@@ -88,7 +88,10 @@ class UNET_AttentionBlock(nn.Module):
         
         x = self.layernorm_1(x)
         x = self.attention_1(x)
+
         x += residue_short
+
+        residue_short = x
 
         # normalization + cross attention with skip connection
         x = self.layernorm_2(x)
@@ -117,16 +120,15 @@ class UNET_AttentionBlock(nn.Module):
 
         return self.conv_output(x) + residue_long
 
-class UpSample(nn.Module):
+class Upsample(nn.Module):
     def __init__(self, channels):
         super().__init__()
         self.conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
     
     def forward(self, x):
         x = F.interpolate(x, scale_factor=2, mode="nearest")
-        x = self.conv(x)
+        return self.conv(x)
         
-        return x
 
 class TimeEmbedding(nn.Module):
     def __init__(self, n_embeddings):
@@ -168,8 +170,7 @@ class SwitchSequential(nn.Sequential):
 class UNET(nn.Module):
     def __init__(self):
         super().__init__()
-
-        self.encoder = nn.ModuleList([
+        self.encoders = nn.ModuleList([
             # batch_size, 4, H/8, W/8
             SwitchSequential(nn.Conv2d(4, 320, kernel_size=3, padding=1)),
 
@@ -204,6 +205,7 @@ class UNET(nn.Module):
         ])
 
         self.bottleneck = SwitchSequential(
+
             UNET_ResidualBlock(1280, 1280),
 
             UNET_AttentionBlock(8, 160),
@@ -211,25 +213,25 @@ class UNET(nn.Module):
             UNET_ResidualBlock(1280, 1280), 
         )
 
-        self.decoder = nn.ModuleList([
+        self.decoders = nn.ModuleList([
             # batch_size, 2560, H/64, W/64 -> batch_size, 1280, H/64, W/64
             SwitchSequential(UNET_ResidualBlock(2560, 1280)),
 
             SwitchSequential(UNET_ResidualBlock(2560, 1280)),
 
-            SwitchSequential(UNET_ResidualBlock(2560, 1280), UpSample(1280)),
+            SwitchSequential(UNET_ResidualBlock(2560, 1280), Upsample(1280)),
 
             SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160)),
 
             SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160)),
 
-            SwitchSequential(UNET_ResidualBlock(1920, 1280), UNET_AttentionBlock(8, 160), UpSample(1280)),
+            SwitchSequential(UNET_ResidualBlock(1920, 1280), UNET_AttentionBlock(8, 160), Upsample(1280)),
             
             SwitchSequential(UNET_ResidualBlock(1920, 640), UNET_AttentionBlock(8, 80)),
         
             SwitchSequential(UNET_ResidualBlock(1280, 640), UNET_AttentionBlock(8, 80)),
 
-            SwitchSequential(UNET_ResidualBlock(960, 640), UNET_AttentionBlock(8, 80), UpSample(640)),
+            SwitchSequential(UNET_ResidualBlock(960, 640), UNET_AttentionBlock(8, 80), Upsample(640)),
 
             SwitchSequential(UNET_ResidualBlock(960, 320), UNET_AttentionBlock(8, 40)),
 
@@ -238,21 +240,22 @@ class UNET(nn.Module):
             SwitchSequential(UNET_ResidualBlock(640, 320), UNET_AttentionBlock(8, 40)),
         ])
 
-    def forward(self, x, context, time):
+    def forward(self, x, prompt, time):
         # x: (Batch_Size, 4, Height / 8, Width / 8)
-        # context: (Batch_Size, Seq_Len, Dim) 
+        # prompt: (Batch_Size, Seq_Len, Dim) 
         # time: (1, 1280)
 
         skip_connections = []
-        for layers in self.encoder:
-            x = layers(x, context, time)
+        for layers in self.encoders:
+            x = layers(x, prompt, time)
             skip_connections.append(x)
 
-        x = self.bottleneck(x, context, time)
+        x = self.bottleneck(x, prompt, time)
 
-        for layers in self.decoder:
+        for layers in self.decoders:
             x = torch.cat((x, skip_connections.pop()), dim=1) 
-            x = layers(x, context, time)
+            x = layers(x, prompt, time)
+
         
         return x
 
