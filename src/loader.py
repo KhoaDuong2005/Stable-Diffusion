@@ -4,13 +4,14 @@ from decoder import VAE_Decoder
 from diffusion import Diffusion
 
 import model_converter
+import vae
 
 
 def preload_models_from_standard_weights(ckpt_path, vae_checkpoint_path=None, device="cuda"):
     state_dict = model_converter.load_from_standard_weights(ckpt_path, device)
 
     if vae_checkpoint_path:
-        encoder, decoder = load_vae_models(vae_checkpoint_path, device)
+        encoder, decoder = vae.load_vae_models(vae_checkpoint_path, device)
 
     else:
         encoder = VAE_Encoder().to(device)
