@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from sampler.ddpm import DDPMSampler
+from PIL import Image
+from IPython.display import clear_output, display
 
 WIDTH = 512
 HEIGHT = 512
@@ -100,6 +102,9 @@ def generate(
         diffusion.to(device)
 
         
+        decoder = models["decoder"]
+        decoder.to(device)
+
         # Iterate through timesteps to denoise the latents.
         for i, timestep in enumerate(tqdm(sampler.timesteps)):
             if fp16_enabled:
@@ -120,32 +125,33 @@ def generate(
             
 
             else:
-                    time_embedding = get_time_embedding(timestep).to(device)
-                    model_input = latents
-                    if do_cfg:
-                        model_input = model_input.repeat(2, 1, 1, 1)
-                        output_pos, output_neg = diffusion(model_input, context, time_embedding)
-                        model_output = cfg_scale * (output_pos - output_neg) + output_neg
-                    else:
-                        model_output = diffusion(model_input, context, time_embedding)
-                    
-                    latents = sampler.step(timestep, latents, model_output)
+                time_embedding = get_time_embedding(timestep).to(device)
+                model_input = latents
+                if do_cfg:
+                    model_input = model_input.repeat(2, 1, 1, 1)
+                    output_pos, output_neg = diffusion(model_input, context, time_embedding)
+                    model_output = cfg_scale * (output_pos - output_neg) + output_neg
+                else:
+                    model_output = diffusion(model_input, context, time_embedding)
+                
+                latents = sampler.step(timestep, latents, model_output)
 
-        
+            # Decode and display the intermediate image
+            intermediate_latents = latents.clone()  # Clone latents to avoid in-place modification issues
+            intermediate_image = decoder(intermediate_latents)
+            intermediate_image = rescale(intermediate_image, (-1, 1), (0, 255), clamp=True)
+            intermediate_image = intermediate_image.permute(0, 2, 3, 1)
+            intermediate_image = intermediate_image.to("cpu", torch.uint8).numpy()[0]
+            
+            # Clear previous output and display the image in Jupyter Notebook
+            clear_output(wait=True)
+            display(Image.fromarray(intermediate_image))
+
         to_idle(diffusion)
-
-        decoder = models["decoder"]
-        decoder.to(device)
-        images = decoder(latents)
         to_idle(decoder)
 
-        images = rescale(images, (-1, 1), (0, 255), clamp=True)
 
-        # Change dimension order from (batch, channel, H, W) to (batch, H, W, channel)
-        images = images.permute(0, 2, 3, 1)
-        images = images.to("cpu", torch.uint8).numpy()
-        return images[0]
-
+        return intermediate_image
 
 def rescale(x, old_range, new_range, clamp=False):
     old_min, old_max = old_range
