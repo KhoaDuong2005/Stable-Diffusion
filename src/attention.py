@@ -11,7 +11,7 @@ except ImportError:
     XFORMERS_AVAILABLE = False
     print("xformers is not available")
 
-
+    
 class SelfAttention(nn.Module):
     def __init__(self, n_heads: int, d_embeddings: int, in_proj_bias=True, out_proj_bias=True):
         super().__init__()
@@ -21,7 +21,7 @@ class SelfAttention(nn.Module):
         self.n_heads = n_heads #number of head
         self.d_head = d_embeddings // n_heads #size of each head (dimension)
 
-    def forward(self, x, casual_mask=False):
+    def forward(self, x, causal_mask=False):
         input_shape = x.shape
         batch_size, sequence_length, d_embeddings  = input_shape
 
@@ -35,49 +35,20 @@ class SelfAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
-        attention_mask = None
+        weight = q @ k.transpose(-2, -1)
 
-        if casual_mask:
-            attention_mask = torch.ones(
-                (batch_size, self.n_heads, sequence_length, sequence_length),
-                dtype=torch.bool, 
-                device=x.device
-            )
-
-            attention_mask = torch.triu(attention_mask, diagonal=1)
-
-        # if xformers is available, use it
-        if XFORMERS_AVAILABLE:
-            attention_bias = None
-            if casual_mask:
-                attention_bias = torch.zeros_like(attention_mask, dtype=torch.float)
-                attention_bias = attention_bias.masked_fill(attention_mask, float("-inf"))
-
-            # apply xformers attention
-            output = xformers.ops.memory_efficient_attention(
-                q, k, v,
-                attn_bias=attention_bias,
-                scale=1.0 / math.sqrt(self.d_head),
-            )
-
-        #if not xformers, use the standard attention
-        else:
-            weight = q @ k.transpose(-2, -1)
-
-            if casual_mask:
+        if causal_mask:
             # upper triangular is made up of 1
-                mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
+            mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
 
-                weight = weight.masked_fill(mask, -torch.inf)
+            weight = weight.masked_fill(mask, -torch.inf)
 
-            weight /= math.sqrt(self.d_head)
+        weight /= math.sqrt(self.d_head)
 
-            weight = F.softmax(weight, dim=-1)
+        weight = F.softmax(weight, dim=-1)
 
-            # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
-            output = weight @ v
-        
-
+        # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
+        output = weight @ v
 
         # (batch_size, H, seq_len, dim / H) -> (batch_size, seq_len, H, dim / H)
         output = output.transpose(1, 2)
@@ -111,6 +82,7 @@ class CrossAttention(nn.Module):
         interim_shape = (batch_size, -1, self.n_heads, self.d_head)
 
         q = self.q_proj(x)
+
         k = self.k_proj(y)
         v = self.v_proj(y)
 
@@ -118,24 +90,13 @@ class CrossAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
-        if XFORMERS_AVAILABLE:
-            # apply xformers attention
-            output = xformers.ops.memory_efficient_attention(
-                q, k, v,
-                attn_bias=None,
-                scale=1.0 / math.sqrt(self.d_head),
-            )
-        
-        # if xformers is not available, use the standard attention
-        else:
-            weight = q @ k.transpose(-2, -1)
+        weight = q @ k.transpose(-2, -1)
 
-            weight /=   math.sqrt(self.d_head)
+        weight /=   math.sqrt(self.d_head)
 
-            weight = F.softmax(weight, dim=-1)
+        weight = F.softmax(weight, dim=-1)
 
-            output = weight @ v
-
+        output = weight @ v
 
         output = output.transpose(1, 2).contiguous()
 
@@ -144,5 +105,4 @@ class CrossAttention(nn.Module):
         output = self.out_proj(output)
 
         return output
-
 
