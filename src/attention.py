@@ -3,6 +3,13 @@ from torch.nn import functional as F
 import torch.nn as nn
 import math
 
+try:
+    import xformers.ops
+    XFORMERS_AVAILABLE = True
+    print("xformers is available")
+except ImportError:
+    XFORMERS_AVAILABLE = False
+    print("xformers is not available")
 
 
 class SelfAttention(nn.Module):
@@ -28,20 +35,50 @@ class SelfAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
-        weight = q @ k.transpose(-2, -1)
+        attention_mask = None
 
         if casual_mask:
+            attention_mask = torch.ones(
+                (sequence_length, sequence_length),
+                dtype=torch.bool, 
+                device=x.device
+            )
+            attention_mask = attention_mask(torch.triu(1).unsqueeze(0).unsqueeze(0))
+
+
+        # if xformers is available, use it
+        if XFORMERS_AVAILABLE:
+            attention_bias = None
+            if casual_mask:
+                attention_bias = torch.zeros_like(attention_mask, dtype=torch.float)
+                attention_bias = attention_bias.masked_fill(attention_mask, float("-inf"))
+
+            # apply xformers attention
+            output = xformers.ops.memory_efficient_attention(
+                q, k, v,
+                attn_bias=attention_bias,
+                scale=1.0 / math.sqrt(self.d_head),
+                dropout=0.1,
+            )
+
+        #if not xformers, use the standard attention
+        else:
+            weight = q @ k.transpose(-2, -1)
+
+            if casual_mask:
             # upper triangular is made up of 1
-            mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
+                mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
 
-            weight = weight.masked_fill(mask, -torch.inf)
+                weight = weight.masked_fill(mask, -torch.inf)
 
-        weight /= math.sqrt(self.d_head)
+            weight /= math.sqrt(self.d_head)
 
-        weight = F.softmax(weight, dim=-1)
+            weight = F.softmax(weight, dim=-1)
 
-        # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
-        output = weight @ v
+            # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
+            output = weight @ v
+        
+
 
         # (batch_size, H, seq_len, dim / H) -> (batch_size, seq_len, H, dim / H)
         output = output.transpose(1, 2)
@@ -75,7 +112,6 @@ class CrossAttention(nn.Module):
         interim_shape = (batch_size, -1, self.n_heads, self.d_head)
 
         q = self.q_proj(x)
-
         k = self.k_proj(y)
         v = self.v_proj(y)
 
@@ -83,13 +119,25 @@ class CrossAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
-        weight = q @ k.transpose(-2, -1)
+        if XFORMER_AVAILABLE:
+            # apply xformers attention
+            output = xformers.ops.memory_efficient_attention(
+                q, k, v,
+                attn_bias=None,
+                scale=1.0 / math.sqrt(self.d_head),
+                dropout=0.1,
+            )
+        
+        # if xformers is not available, use the standard attention
+        else:
+            weight = q @ k.transpose(-2, -1)
 
-        weight /=   math.sqrt(self.d_head)
+            weight /=   math.sqrt(self.d_head)
 
-        weight = F.softmax(weight, dim=-1)
+            weight = F.softmax(weight, dim=-1)
 
-        output = weight @ v
+            output = weight @ v
+
 
         output = output.transpose(1, 2).contiguous()
 
