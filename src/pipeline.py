@@ -22,7 +22,8 @@ def generate(
     seed=None,
     device=None,
     idle_device=None,
-    tokenizer=None
+    tokenizer=None,
+    fp16_enabled=False,
 ):
     with torch.no_grad():
         if not (0 < strength <= 1):
@@ -98,20 +99,38 @@ def generate(
         diffusion = models["diffusion"]
         diffusion.to(device)
 
+        
         # Iterate through timesteps to denoise the latents.
         for i, timestep in enumerate(tqdm(sampler.timesteps)):
-            time_embedding = get_time_embedding(timestep).to(device)
-            model_input = latents
-            if do_cfg:
-                # Duplicate batch dimension for CFG.
-                model_input = model_input.repeat(2, 1, 1, 1)
-                # Expect diffusion() to return a tuple (output_pos, output_neg)
-                output_pos, output_neg = diffusion(model_input, context, time_embedding)
-                model_output = cfg_scale * (output_pos - output_neg) + output_neg
-            else:
-                model_output = diffusion(model_input, context, time_embedding)
+            if fp16_enabled:
+                scalar = torch.amp.GradScaler("cuda")
+                with torch.amp.autocast(device_type=device, dtype=torch.float16):
+                    time_embedding = get_time_embedding(timestep).to(device)
+                    model_input = latents
+                    if do_cfg:
+                        # Duplicate batch dimension for CFG.
+                        model_input = model_input.repeat(2, 1, 1, 1)
+                        # Expect diffusion() to return a tuple (output_pos, output_neg)
+                        output_pos, output_neg = diffusion(model_input, context, time_embedding)
+                        model_output = cfg_scale * (output_pos - output_neg) + output_neg
+                    else:
+                        model_output = diffusion(model_input, context, time_embedding)
+                    
+                    latents = sampler.step(timestep, latents, model_output)
             
-            latents = sampler.step(timestep, latents, model_output)
+
+            else:
+                    time_embedding = get_time_embedding(timestep).to(device)
+                    model_input = latents
+                    if do_cfg:
+                        model_input = model_input.repeat(2, 1, 1, 1)
+                        output_pos, output_neg = diffusion(model_input, context, time_embedding)
+                        model_output = cfg_scale * (output_pos - output_neg) + output_neg
+                    else:
+                        model_output = diffusion(model_input, context, time_embedding)
+                    
+                    latents = sampler.step(timestep, latents, model_output)
+
         
         to_idle(diffusion)
 
