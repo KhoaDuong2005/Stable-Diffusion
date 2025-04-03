@@ -5,6 +5,7 @@ import math
 
 try:
     import xformers.ops
+    from xformers.ops.fmha.attn_bias import LowerTriangularMask
     XFORMERS_AVAILABLE = True
     print("xformers is available")
 except ImportError:
@@ -25,36 +26,49 @@ class SelfAttention(nn.Module):
         input_shape = x.shape
         batch_size, sequence_length, d_embeddings  = input_shape
 
-        interim_shape = (batch_size, sequence_length, self.n_heads, self.d_head)
-
         # batch_size, seq_len, dim -> batchsize, seq_len, dim/3 -> 3 tensors of shape batch_size, seq_len, dim
         q, k, v = self.in_proj(x).chunk(3, dim=-1) #query, key, value
 
-        #batch_size, seq_len, dim -> (batch_size, seq_len, H, dim / H), and with transpose 1,2 => (batch_size, H, seq_len, dim / H)
-        q = q.view(interim_shape).transpose(1, 2)
-        k = k.view(interim_shape).transpose(1, 2)
-        v = v.view(interim_shape).transpose(1, 2)
+        # using xformers
+        if XFORMERS_AVAILABLE:
+            q = q.view(batch_size, sequence_length, self.n_heads, self.d_head)
+            k = k.view(batch_size, sequence_length, self.n_heads, self.d_head)
+            v = v.view(batch_size, sequence_length, self.n_heads, self.d_head)
 
-        weight = q @ k.transpose(-2, -1)
+            q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
 
-        if causal_mask:
-            # upper triangular is made up of 1
-            mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
+            attention_bias = LowerTriangularMask() if causal_mask else None
 
-            weight = weight.masked_fill(mask, -torch.inf)
+            output = xformers.ops.memory_efficient_attention(
+                q, k, v,
+                attn_bias=attention_bias,
+            )
+        else:
+            interim_shape = (batch_size, sequence_length, self.n_heads, self.d_head)
 
-        weight /= math.sqrt(self.d_head)
+            #batch_size, seq_len, dim -> (batch_size, seq_len, H, dim / H), and with transpose 1,2 => (batch_size, H, seq_len, dim / H)
+            q = q.view(interim_shape).transpose(1, 2)
+            k = k.view(interim_shape).transpose(1, 2)
+            v = v.view(interim_shape).transpose(1, 2)
 
-        weight = F.softmax(weight, dim=-1)
+            weight = q @ k.transpose(-2, -1)
+            if causal_mask:
+                # upper triangular is made up of 1
+                mask = torch.ones_like(weight, dtype=torch.bool).triu(1)
 
-        # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
-        output = weight @ v
+                weight = weight.masked_fill(mask, -torch.inf)
 
+            weight /= math.sqrt(self.d_head)
+
+            weight = F.softmax(weight, dim=-1)
+
+            # (batch_size, H, seq_len, seq_len) @ (batch_size, H, seq_len, dim / H) - > (batch_size, H, seq_len, dim / H)
+            output = weight @ v
         # (batch_size, H, seq_len, dim / H) -> (batch_size, seq_len, H, dim / H)
-        output = output.transpose(1, 2)
+            output = output.transpose(1, 2).contiguous()
 
         # (batch_size, seq_len, H, dim / H) -> (batch_size, seq_len, dim)
-        output = output.reshape(input_shape)
+        output = output.view(batch_size, sequence_length, d_embeddings)
         
         output = self.out_proj(output)
 
@@ -79,28 +93,40 @@ class CrossAttention(nn.Module):
         input_shape = x.shape
         batch_size, sequence_length, d_embeddings = input_shape
 
-        interim_shape = (batch_size, -1, self.n_heads, self.d_head)
-
+        
         q = self.q_proj(x)
-
         k = self.k_proj(y)
         v = self.v_proj(y)
 
-        q = q.view(interim_shape).transpose(1, 2)
-        k = k.view(interim_shape).transpose(1, 2)
-        v = v.view(interim_shape).transpose(1, 2)
+        if XFORMERS_AVAILABLE:
+            q = q.view(batch_size, -1, self.n_heads, self.d_head)
+            k = k.view(batch_size, -1, self.n_heads, self.d_head)
+            v = v.view(batch_size, -1, self.n_heads, self.d_head)
 
-        weight = q @ k.transpose(-2, -1)
+            q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
 
-        weight /=   math.sqrt(self.d_head)
+            output = xformers.ops.memory_efficient_attention(
+                q, k, v
+            )
 
-        weight = F.softmax(weight, dim=-1)
+        else:
+            interim_shape = (batch_size, -1, self.n_heads, self.d_head)
 
-        output = weight @ v
+            q = q.view(interim_shape).transpose(1, 2)
+            k = k.view(interim_shape).transpose(1, 2)
+            v = v.view(interim_shape).transpose(1, 2)
 
-        output = output.transpose(1, 2).contiguous()
+            weight = q @ k.transpose(-2, -1)
 
-        output = output.view(input_shape)
+            weight /=   math.sqrt(self.d_head)
+
+            weight = F.softmax(weight, dim=-1)
+
+            output = weight @ v
+
+            output = output.transpose(1, 2).contiguous()
+
+        output = output.view(batch_size, sequence_length, d_embeddings)
 
         output = self.out_proj(output)
 
