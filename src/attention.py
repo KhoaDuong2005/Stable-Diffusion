@@ -39,12 +39,12 @@ class SelfAttention(nn.Module):
 
         if casual_mask:
             attention_mask = torch.ones(
-                (sequence_length, sequence_length),
+                (batch_size, self.n_heads, sequence_length, sequence_length),
                 dtype=torch.bool, 
                 device=x.device
             )
-            attention_mask = attention_mask(torch.triu(1).unsqueeze(0).unsqueeze(0))
 
+            attention_mask = torch.triu(attention_mask, diagonal=1)
 
         # if xformers is available, use it
         if XFORMERS_AVAILABLE:
@@ -58,7 +58,6 @@ class SelfAttention(nn.Module):
                 q, k, v,
                 attn_bias=attention_bias,
                 scale=1.0 / math.sqrt(self.d_head),
-                dropout=0.1,
             )
 
         #if not xformers, use the standard attention
@@ -119,13 +118,12 @@ class CrossAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
-        if XFORMER_AVAILABLE:
+        if XFORMERS_AVAILABLE:
             # apply xformers attention
             output = xformers.ops.memory_efficient_attention(
                 q, k, v,
                 attn_bias=None,
                 scale=1.0 / math.sqrt(self.d_head),
-                dropout=0.1,
             )
         
         # if xformers is not available, use the standard attention
