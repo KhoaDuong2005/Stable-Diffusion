@@ -108,6 +108,7 @@ def generate(
         # Iterate through timesteps to denoise the latents.
         for i, timestep in enumerate(tqdm(sampler.timesteps)):
             if fp16_enabled:
+                print("Using FP16 for inference")
                 scalar = torch.amp.GradScaler("cuda")
                 with torch.amp.autocast(device_type=device, dtype=torch.float16):
                     time_embedding = get_time_embedding(timestep).to(device)
@@ -125,6 +126,7 @@ def generate(
             
 
             else:
+                
                 time_embedding = get_time_embedding(timestep).to(device)
                 model_input = latents
                 if do_cfg:
@@ -149,7 +151,8 @@ def generate(
 
         to_idle(diffusion)
         to_idle(decoder)
-
+        
+        torch.cuda.empty_cache()
 
         return intermediate_image
 
