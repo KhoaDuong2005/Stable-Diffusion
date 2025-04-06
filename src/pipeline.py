@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from sampler.ddpm import DDPMSampler
+from sampler.euler import EulerSampler
 from PIL import Image
 from IPython.display import clear_output, display
 
@@ -70,11 +71,24 @@ def generate(
 
         to_idle(clip)
 
-        if sampler == "ddpm":
-            sampler = DDPMSampler(generator)
-            sampler.set_steps(steps)
+        sampler_class_name_upper = f"{sampler.upper()}Sampler"
+        sampler_class_name_capital = f"{sampler.capitalize()}Sampler"
+
+        sampler_class = None
+
+        if sampler_class_name_upper in globals():
+            sampler_class = globals()[sampler_class_name_upper]
+        elif sampler_class_name_capital in globals():
+            sampler_class = globals()[sampler_class_name_capital]
         else:
-            raise ValueError(f"Unknown/undefined sampler {sampler}")
+            raise ValueError(f"Sampler '{sampler}' not found")
+
+        print(f"Using {sampler_class.__name__} sampler")
+
+        sampler = sampler_class(generator)
+        sampler.set_steps(steps)
+        print(f"Using {sampler.__class__.__name__} with {steps} steps")
+
 
         latents_shape = (1, 4, LATENT_HEIGHT, LATENTS_WIDTH)
 
