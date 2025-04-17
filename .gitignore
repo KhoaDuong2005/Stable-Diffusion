@@ -180,5 +180,3 @@ data
 .gitignore
 test
 vae_checkpoints
-src/test.ipynb
-src/test.py
