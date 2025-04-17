@@ -7,6 +7,7 @@ try:
     import xformers.ops
     from xformers.ops.fmha.attn_bias import LowerTriangularMask
     XFORMERS_AVAILABLE = True
+
 except ImportError:
     XFORMERS_AVAILABLE = False
     print("xformers is not available")
