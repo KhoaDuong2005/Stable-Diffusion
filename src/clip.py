@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from attention import SelfAttention
+
+
 
 class CLIPEmbedding(nn.Module):
     def __init__(self, vocab_size, n_embeddings, n_tokens: int): #n_tokens = seq_len
@@ -17,12 +18,24 @@ class CLIPEmbedding(nn.Module):
 
         return x
 
+DEBUG_MODE = True
 class CLIPLayer(nn.Module):
-    def __init__(self, n_heads: int, n_embeddings: int):
+    def __init__(self, n_heads: int, n_embeddings: int, attention_type = "xformers"):
         super().__init__()
+        self.layernorm_1 = nn.LayerNorm(n_embeddings) 
 
-        self.layernorm_1 = nn.LayerNorm(n_embeddings)
-        self.attention = SelfAttention(n_heads, n_embeddings)
+        if attention_type == "xformers":
+            from attention import SelfAttention
+            if DEBUG_MODE:
+                print("Using xformers attention for CLIP")
+            self.attention = SelfAttention(n_heads, n_embeddings)
+        elif attention_type == "flashattention":
+            from flash_attention import FlashSelfAttention
+            if DEBUG_MODE:
+                print("Using flash attention for CLIP")
+            self.attention = FlashSelfAttention(n_heads, n_embeddings)
+
+        
         self.layernorm_2 = nn.LayerNorm(n_embeddings)
         self.linear_1 = nn.Linear(n_embeddings, n_embeddings * 4)
         self.linear_2 = nn.Linear(n_embeddings * 4, n_embeddings)
@@ -56,12 +69,12 @@ class CLIPLayer(nn.Module):
 
 
 class CLIP(nn.Module):
-    def __init__(self):
+    def __init__(self, attention_type = "xformers"):
         super().__init__()
         self.embedding = CLIPEmbedding(49408, 768, 77) #vocab size, embedding, seq_len
 
         # 12 layers of (num_of_head, embedding)
-        self.layers = nn.ModuleList([CLIPLayer(12, 768) for i in range(12)])
+        self.layers = nn.ModuleList([CLIPLayer(12, 768, attention_type=attention_type) for i in range(12)])
 
         self.layernorm = nn.LayerNorm(768)
 

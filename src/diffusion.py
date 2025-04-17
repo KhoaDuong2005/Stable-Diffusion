@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from attention import SelfAttention, CrossAttention
 
 class UNET_ResidualBlock(nn.Module):
     def __init__(self, input_channel: int, output_channel: int, n_time=1280):
@@ -44,8 +43,10 @@ class UNET_ResidualBlock(nn.Module):
 
         return merged + self.residual_layer(residue)
 
+DEBUG_MODE = True
+
 class UNET_AttentionBlock(nn.Module):
-    def __init__(self, n_heads: int, n_embeddings: int, d_prompt=768):
+    def __init__(self, n_heads: int, n_embeddings: int, d_prompt=768, attention_type="xformers"):
         super().__init__()
         channels = n_heads * n_embeddings
 
@@ -53,12 +54,25 @@ class UNET_AttentionBlock(nn.Module):
         self.conv_input = nn.Conv2d(channels, channels, kernel_size=1, padding=0)
 
         self.layernorm_1 = nn.LayerNorm(channels)
-        self.attention_1 = SelfAttention(n_heads, channels, in_proj_bias=False)
-
         self.layernorm_2 = nn.LayerNorm(channels)
-        self.attention_2 = CrossAttention(n_heads, channels, d_prompt, in_proj_bias=False)
-
         self.layernorm_3 = nn.LayerNorm(channels)
+        
+        # Choose attention implementation based on the parameter
+        if attention_type == "flashattention":
+            if DEBUG_MODE:
+                print("Using flash attention for UNET")
+            from flash_attention import FlashSelfAttention, FlashCrossAttention
+            self.attention_1 = FlashSelfAttention(n_heads, channels, in_proj_bias=False)
+            self.attention_2 = FlashCrossAttention(n_heads, channels, d_prompt, in_proj_bias=False)
+        elif attention_type == "xformers":
+            if DEBUG_MODE:
+                print("Using xformers attention for UNET")
+            from attention import SelfAttention, CrossAttention
+            self.attention_1 = SelfAttention(n_heads, channels, in_proj_bias=False)
+            self.attention_2 = CrossAttention(n_heads, channels, d_prompt, in_proj_bias=False)
+        else:
+            raise ValueError(f"Unknown attention type: {attention_type}. Must be 'flashattention' or 'xformers'")
+
         self.linear_geglu_1 = nn.Linear(channels, 4 * channels * 2)
         self.linear_geglu_2 = nn.Linear(channels * 4, channels)
 
@@ -168,32 +182,33 @@ class SwitchSequential(nn.Sequential):
 
 
 class UNET(nn.Module):
-    def __init__(self):
+    def __init__(self, attention_type="xformers"):
         super().__init__()
+        self.attention_type = attention_type
         self.encoders = nn.ModuleList([
             # batch_size, 4, H/8, W/8
             SwitchSequential(nn.Conv2d(4, 320, kernel_size=3, padding=1)),
 
-            SwitchSequential(UNET_ResidualBlock(320, 320), UNET_AttentionBlock(8, 40)),
+            SwitchSequential(UNET_ResidualBlock(320, 320), UNET_AttentionBlock(8, 40, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(320, 320), UNET_AttentionBlock(8, 40)),
+            SwitchSequential(UNET_ResidualBlock(320, 320), UNET_AttentionBlock(8, 40, attention_type=attention_type)),
 
             # -------------------------------------------------------------------------#
             # batch_size, 320, H/8, W/8 -> # batch_size, 320, H/16, W/16
             SwitchSequential(nn.Conv2d(320, 320, kernel_size=3, stride=2, padding=1)),
             
             #decrease the size
-            SwitchSequential(UNET_ResidualBlock(320, 640), UNET_AttentionBlock(8, 80)),
+            SwitchSequential(UNET_ResidualBlock(320, 640), UNET_AttentionBlock(8, 80, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(640, 640), UNET_AttentionBlock(8, 80)),
+            SwitchSequential(UNET_ResidualBlock(640, 640), UNET_AttentionBlock(8, 80, attention_type=attention_type)),
 
             # -------------------------------------------------------------------------#
             # batch_size, 640, H/16, W/16 -> batch_size, 640, H/32, W/32
             SwitchSequential(nn.Conv2d(640, 640, kernel_size=3, stride=2, padding=1)),
 
-            SwitchSequential(UNET_ResidualBlock(640, 1280), UNET_AttentionBlock(8, 160)),
+            SwitchSequential(UNET_ResidualBlock(640, 1280), UNET_AttentionBlock(8, 160, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(1280, 1280), UNET_AttentionBlock(8, 160)),
+            SwitchSequential(UNET_ResidualBlock(1280, 1280), UNET_AttentionBlock(8, 160, attention_type=attention_type)),
 
             # -------------------------------------------------------------------------#
             # batch_size, 1280, H/32, W/32 -> batch_size, 1280, H/64, W/64
@@ -208,7 +223,7 @@ class UNET(nn.Module):
 
             UNET_ResidualBlock(1280, 1280),
 
-            UNET_AttentionBlock(8, 160),
+            UNET_AttentionBlock(8, 160, attention_type=attention_type),
 
             UNET_ResidualBlock(1280, 1280), 
         )
@@ -221,23 +236,23 @@ class UNET(nn.Module):
 
             SwitchSequential(UNET_ResidualBlock(2560, 1280), Upsample(1280)),
 
-            SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160)),
+            SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160)),
+            SwitchSequential(UNET_ResidualBlock(2560, 1280), UNET_AttentionBlock(8, 160, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(1920, 1280), UNET_AttentionBlock(8, 160), Upsample(1280)),
+            SwitchSequential(UNET_ResidualBlock(1920, 1280), UNET_AttentionBlock(8, 160, attention_type=attention_type), Upsample(1280)),
             
-            SwitchSequential(UNET_ResidualBlock(1920, 640), UNET_AttentionBlock(8, 80)),
+            SwitchSequential(UNET_ResidualBlock(1920, 640), UNET_AttentionBlock(8, 80, attention_type=attention_type)),
         
-            SwitchSequential(UNET_ResidualBlock(1280, 640), UNET_AttentionBlock(8, 80)),
+            SwitchSequential(UNET_ResidualBlock(1280, 640), UNET_AttentionBlock(8, 80, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(960, 640), UNET_AttentionBlock(8, 80), Upsample(640)),
+            SwitchSequential(UNET_ResidualBlock(960, 640), UNET_AttentionBlock(8, 80, attention_type=attention_type), Upsample(640)),
 
-            SwitchSequential(UNET_ResidualBlock(960, 320), UNET_AttentionBlock(8, 40)),
+            SwitchSequential(UNET_ResidualBlock(960, 320), UNET_AttentionBlock(8, 40, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(640, 320), UNET_AttentionBlock(8, 40)),
+            SwitchSequential(UNET_ResidualBlock(640, 320), UNET_AttentionBlock(8, 40, attention_type=attention_type)),
 
-            SwitchSequential(UNET_ResidualBlock(640, 320), UNET_AttentionBlock(8, 40)),
+            SwitchSequential(UNET_ResidualBlock(640, 320), UNET_AttentionBlock(8, 40, attention_type=attention_type)),
         ])
 
     def forward(self, x, prompt, time):
@@ -279,10 +294,10 @@ class UNET_Output_Layer(nn.Module):
 
 
 class Diffusion(nn.Module): 
-    def __init__(self):
+    def __init__(self, attention_type="xformers"):
         super().__init__()
         self.time_embedding = TimeEmbedding(320)
-        self.unet = UNET()
+        self.unet = UNET(attention_type=attention_type)
         self.final = UNET_Output_Layer(320, 4)
 
     def forward(self, latent: torch.Tensor, prompt: torch.Tensor, time: torch.Tensor):
