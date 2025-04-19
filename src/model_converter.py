@@ -1,8 +1,23 @@
 import torch
 
 def load_from_standard_weights(input_file: str, device: str) -> dict[str, torch.Tensor]:
-    # Taken from: https://github.com/kjsman/stable-diffusion-pytorch/issues/7#issuecomment-1426839447
-    original_model = torch.load(input_file, map_location=device, weights_only = False)["state_dict"]
+    
+    if input_file.endswith(".safetensors"):
+        try:
+            from safetensors import safe_open
+            
+            original_model = {}
+            with safe_open(input_file, framework="pt", device=device) as f:
+                for key in f.keys():
+                    original_model[key] = f.get_tensor(key)
+            
+        except ImportError:
+            raise ImportError("Please install safetensors: pip install safetensors")
+        except Exception as e:
+            raise ValueError(f"Error loading safetensors file: {str(e)}. Make sure the file path is correct.")
+    else:
+        checkpoint = torch.load(input_file, map_location=device, weights_only=False)
+        original_model = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
 
     converted = {}
     converted['diffusion'] = {}
