@@ -4,152 +4,134 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
-from vae import VariationalAutoEncoder
-from PIL import Image
-from torch.utils.data import Dataset
-import os
 import numpy as np
 import matplotlib.pyplot as plt
+import multiprocessing
+from torch.amp import GradScaler, autocast
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-INPUT_DIM = 3 * 64 * 64
-HIDDEN_DIM = 512
-Z_DIM = 64
-EPOCHS = 10
-BATCH_SIZE = 32
-LR_RATE = 1e-4
+from vae import VariationalAutoencoder, inference, ImageDataset
 
-transform = transforms.Compose([
-    transforms.Resize((64, 64)),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-])
+import argparse
+import os
 
-class NumpyDataset(Dataset):
-    def __init__(self, images: list, labels: list, transform=None):
-        super().__init__()
-        self.images = images
-        self.labels = labels
-        self.transform = transform
+parser = argparse.ArgumentParser(description="Train a Variational Autoencoder")
+parser.add_argument("--data_dir", type=str, required=True, help="Path to the directory containing images")
+parser.add_argument("--image_size", type=int, default=128, help="Size of the images")
+parser.add_argument("--latent_dim", type=int, default=4, help="Dimensionality of the latent space")
+parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
 
-    def __len__(self):
-        return len(self.images)
 
-    def __getitem__(self, idx):
-        image_np = self.images[idx]
-        label = self.labels[idx]
-        image = Image.fromarray(image_np)
-        if self.transform:
-            image = self.transform(image)
-        label = torch.tensor(label)
-        return image, label
+
+if __name__ == '__main__':
+
+    args = parser.parse_args()
     
-def load_image_data(data_dir: str):
-    images = []
-    labels = []
-    label_names = sorted([directory for directory in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, directory))])
+    multiprocessing.freeze_support()
+    torch.backends.cudnn.benchmark = True
+
+
     
-    label_index = {}
-    for index, label_name in enumerate(label_names):
-        label_index[label_name] = index
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    IMAGE_SIZE = args.image_size
+    LATENT_DIM = args.latent_dim
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+    LR_RATE = 3e-4
+    NUM_WORKERS = 8
 
-    for label_name in label_names:
-        folder_path = os.path.join(data_dir, label_name)
-        for file in os.listdir(folder_path):
-            try:
-                file_path = os.path.join(folder_path, file)
-                if os.path.isfile(file_path):
-                    image = Image.open(file_path).convert("RGB")
-                    image_np = np.array(image)
-                    images.append(image_np)
-                    labels.append(label_index[label_name])
-            except Exception as e:
-                print(f"Error loading {file_path}: {e}")
+    transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
+
+    # data_dir = r"D:\Project\Stable-Diffusion\data\images"
+    data_dir = args.data_dir
+    if not os.path.exists(data_dir):
+        print(f"Directory {data_dir} does not exist")
+        exit(1)
+        
+    dataset = ImageDataset(data_dir, transform=transform)
+    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2)
+
+    model = VariationalAutoencoder(z_dim=LATENT_DIM).to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR_RATE, betas=(0.9, 0.99), weight_decay=0.01)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader) * EPOCHS)
+    recon_loss_fn = nn.MSELoss(reduction="sum")
     
-    return images, labels, label_index
+    use_amp = DEVICE.type == 'cuda'
+    scaler = GradScaler(enabled=use_amp)
 
-data_dir = r"D:\Project\Stable-Diffusion\data\images"
+    for epoch in range(EPOCHS):
+        model.train()
+        loop = tqdm(enumerate(train_loader), total=len(train_loader), leave=False)
+        epoch_recon_loss = 0
+        
+        for i, x in loop:
+            x = x.to(DEVICE, non_blocking=True)
+            
+            if x.shape[0] == 1:
+                continue
 
-images, labels, label_index = load_image_data(data_dir)
-dataset = NumpyDataset(images, labels, transform=transform)
-train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+            optimizer.zero_grad(set_to_none=True)
+            
+            with autocast(device_type=DEVICE.type, enabled=use_amp):
+                x_reconstructed = model(x) 
+                reconstruction_loss = recon_loss_fn(x_reconstructed, x) / x.shape[0]
+            
+            scaler.scale(reconstruction_loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            
+            scheduler.step()
+            
+            epoch_recon_loss += reconstruction_loss.item()
+            
+            loop.set_description(f"Epoch [{epoch+1}/{EPOCHS}]")
+            loop.set_postfix(ReconLoss=reconstruction_loss.item()) 
+        
+        avg_recon_loss = epoch_recon_loss / len(train_loader)
+        print(f"Epoch {epoch+1}/{EPOCHS}, Avg Recon Loss: {avg_recon_loss:.4f}") 
 
-model = VariationalAutoEncoder(INPUT_DIM, HIDDEN_DIM, Z_DIM).to(DEVICE)
-optimizer = optim.AdamW(model.parameters(), lr=LR_RATE, weight_decay=1e-5)
-recon_loss_fn = nn.MSELoss(reduction="mean")
-beta = 0.001
+        model.eval()
+        with torch.no_grad():
+            rand_idx = np.random.randint(0, len(dataset))
+            real_img = dataset[rand_idx].unsqueeze(0).to(DEVICE)
+            
+            with autocast(device_type=DEVICE.type, enabled=use_amp):
+                recon_img = model(real_img) 
 
-for epoch in range(EPOCHS):
-    model.train()
-    loop = tqdm(train_loader)
-    epoch_loss = 0
+            real_display = real_img[0].cpu().permute(1, 2, 0).numpy() * 0.5 + 0.5
+            recon_display = recon_img[0].cpu().permute(1, 2, 0).float().numpy() * 0.5 + 0.5
+
+            fig, axs = plt.subplots(1, 2, figsize=(8, 4))
+            axs[0].imshow(np.clip(real_display, 0, 1))
+            axs[0].set_title("Original")
+            axs[0].axis("off")
+
+            axs[1].imshow(np.clip(recon_display, 0, 1))
+            axs[1].set_title("Reconstruction")
+            axs[1].axis("off")
+
+            plt.tight_layout()
+            save_path = f"recon_epoch_{epoch+1}.png"
+            plt.savefig(save_path)
+            plt.close()
+
+    model_save_path = "lite_vae_model.pt"
+    torch.save(model.state_dict(), model_save_path)
     
-    for i, (x, _) in enumerate(loop):
-        x = x.to(DEVICE).view(x.shape[0], INPUT_DIM)
-        
-        optimizer.zero_grad()
-        x_reconstructed, mu, sigma = model(x)
-        
-        reconstruction_loss = recon_loss_fn(x_reconstructed, x)
-        kl_divergence = -0.5 * torch.sum(1 + torch.log(sigma.pow(2) + 1e-8) - mu.pow(2) - sigma.pow(2))
-        
-        total_loss = reconstruction_loss + beta * kl_divergence
-        total_loss.backward()
-        
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        
-        epoch_loss += total_loss.item()
-        loop.set_postfix(loss=total_loss.item())
+    generated_images = inference(model, num_samples=4, device=DEVICE, image_size=IMAGE_SIZE, latent_dim=LATENT_DIM)
     
-    print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {epoch_loss/len(train_loader):.4f}")
-    
-    model.eval()
-    with torch.no_grad():
-        sample_z = torch.randn(8, Z_DIM).to(DEVICE)
-        model.original_size = (8, 3, 64, 64)
-        samples = model.decode(sample_z)
-        
-        rand_idx = np.random.randint(0, len(dataset))
-        real_img, _ = dataset[rand_idx]
-        real_img = real_img.unsqueeze(0).to(DEVICE)
-        recon_img, _, _ = model(real_img.view(1, -1))
-        recon_img = recon_img.view(1, 3, 64, 64)
-        
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-        
-        real_display = real_img[0].cpu().permute(1, 2, 0).numpy() * 0.5 + 0.5
-        recon_display = recon_img[0].cpu().permute(1, 2, 0).numpy() * 0.5 + 0.5
-        
-        axs[0].imshow(np.clip(real_display, 0, 1))
-        axs[0].set_title("Original")
-        axs[0].axis("off")
-        
-        axs[1].imshow(np.clip(recon_display, 0, 1))
-        axs[1].set_title("Reconstruction")
-        axs[1].axis("off")
-        
-        plt.tight_layout()
-        plt.savefig(f"reconstruction_epoch_{epoch+1}.png")
-        plt.close()
-
-torch.save(model.state_dict(), "improved_vae_model.pt")
-
-def inference(model, target_size=(64, 64)):
-    model.eval()
-    with torch.no_grad():
-        z = torch.randn(1, Z_DIM).to(DEVICE)
-        model.original_size = (1, 3, target_size[0], target_size[1])
-        generated_image = model.decode(z)
-        
-        generated_image = generated_image.view(1, 3, target_size[0], target_size[1])
-        generated_image = generated_image.squeeze(0).permute(1, 2, 0).cpu().numpy() * 0.5 + 0.5
-        generated_image = np.clip(generated_image * 255, 0, 255).astype(np.uint8)
-        return Image.fromarray(generated_image)
-
-image = inference(model)
-plt.figure(figsize=(6, 6))
-plt.imshow(image)
-plt.axis('off')
-plt.title("Generated Image")
-plt.show()
+    fig, axes = plt.subplots(1, len(generated_images), figsize=(12, 4))
+    if len(generated_images) == 1:
+        axes = [axes]
+    for ax, img in zip(axes, generated_images):
+        ax.imshow(img)
+        ax.axis('off')
+    plt.tight_layout()
+    plt.savefig("generated_samples.png")
+    plt.close()
