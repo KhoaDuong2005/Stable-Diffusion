@@ -1,108 +1,98 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from encoder import VAE_Encoder
-from decoder import VAE_Decoder
-import os
-from tqdm import tqdm
+
+# from encoder import VAE_Encoder
+# from decoder import VAE_Decoder
 
 
-class VAE(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.encoder = VAE_Encoder()
-        self.decoder = VAE_Decoder()
 
-    def forward(self, x):
-        batch_size, _, height, width = x.shape
+# class VAE(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.encoder = VAE_Encoder()
+#         self.decoder = VAE_Decoder()
 
-        noise = torch.randn(batch_size, 4, height // 8, width // 8).to(x.device)
+#     def forward(self, x):
+#         batch_size, _, height, width = x.shape
 
-        latents = self.encoder(x, noise)
+#         noise = torch.randn(batch_size, 4, height // 8, width // 8).to(x.device)
 
-        reconstructed = self.decoder(latents)
+#         latents = self.encoder(x, noise)
 
-        return reconstructed, latents, noise
+#         reconstructed = self.decoder(latents)
+
+#         return reconstructed, latents, noise
         
     
-    def loss_function(self, recon_x, x, latents, noise):
-        # Reconstruction loss
-        recon_loss = nn.functional.mse_loss(recon_x, x)
+#     def loss_function(self, recon_x, x, latents, noise):
+#         # Reconstruction loss
+#         recon_loss = nn.functional.mse_loss(recon_x, x)
 
-        # KL divergence loss
-        kl_loss = -0.5 * torch.sum(1 + noise - noise.pow(2) - noise.exp())
+#         # KL divergence loss
+#         kl_loss = -0.5 * torch.sum(1 + noise - noise.pow(2) - noise.exp())
 
-        return recon_loss + 0.0001 * kl_loss, recon_loss, kl_loss
-
-
-def train_vae(epochs=30, batch_size=32, lr=1e-4, device="cuda"):
-    transform = transforms.Compose([
-        transforms.Resize((64, 64)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
-    ])
-
-    # TODO: Implement an UI for selecting the dataset
-    dataset = datasets.ImageFolder("../data/images", transform=transform)
-    dataloader = DataLoader(dataset, batch_size, shuffle=True, num_workers=8)
-
-    os.makedirs("../vae_checkpoints", exist_ok=True)
-    
-    vae = VAE().to(device)
-    optimizer = optim.AdamW(vae.parameters(), lr=lr, weight_decay=1e-5) 
-
-    for epoch in tqdm(range(epochs), desc="Training VAE", unit="epoch"):
-        vae.train()
-        total_loss = 0
-        recon_loss = 0
-        kl_loss = 0
-
-        for batch in dataloader:
-            images, _ = batch
-            images = images.to(device)
-
-            optimizer.zero_grad()
-
-            recon_images, latents, noise = vae(images)
-
-            loss, recon_loss, kl_loss = vae.loss_function(recon_images, images, latents, noise)
-
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            recon_loss += recon_loss.item()
-            kl_loss += kl_loss.item()
+#         return recon_loss + 0.0001 * kl_loss, recon_loss, kl_loss
 
 
-            if epoch % 5 == 0:
-                print(f"Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}, Recon Loss: {recon_loss.item():.4f}, KL Loss: {kl_loss.item():.4f}")
+
+class VariationalAutoEncoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim=200, z_dim=20):
+        super().__init__()
+        # encoder
+        self.img_2_hidden = nn.Linear(input_dim, hidden_dim)
+        self.hidden_2_mu = nn.Linear(hidden_dim, z_dim)
+        self.hidden_2_sigma = nn.Linear(hidden_dim, z_dim)
+        
+        #decoder
+        self.z_2_hidden = nn.Linear(z_dim, hidden_dim)
+        self.hidden_2_img = nn.Linear(hidden_dim, input_dim)
+        
+        self.relu = nn.ReLU()
+        
+        # Store dimensions for potential inference
+        self.input_dim = input_dim
+        self.z_dim = z_dim
+        
+    def encode(self, x):
+        # If x is not flattened, flatten it
+        if len(x.shape) > 2:
+            x = x.view(x.shape[0], -1)
             
-        avg_loss = total_loss / len(dataloader)
-        avg_recon_loss = recon_loss / len(dataloader)
-        avg_kl_loss = kl_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Recon Loss: {avg_recon_loss:.4f}, KL Loss: {avg_kl_loss:.4f}")
+        # q_phi(z given x)
+        h = self.img_2_hidden(x)
+        h = self.relu(h)
+        
+        mu, sigma = self.hidden_2_mu(h), self.hidden_2_sigma(h)
+        
+        return mu, sigma
 
-        if epoch % 10 == 0 or epoch == epochs - 1:
-            torch.save({
-                "encoder_state_dict": vae.encoder.state_dict(),
-                "decoder_state_dict": vae.decoder.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "epoch": epoch,
-            }, f"../vae_checkpoints/vae_epoch_{epoch}.pth")
-
+    def decode(self, z):
+        # p_theta(x given z)
+        h = self.z_2_hidden(z)
+        h = self.relu(h)
+        h = self.hidden_2_img(h)
+        h = torch.sigmoid(h) # for binary cross entropy loss
+        
+        return h
+        
+    def forward(self, x):
+        # Handle either flattened or unflattened input
+        original_shape = x.shape
+        if len(original_shape) > 2:
+            x = x.view(original_shape[0], -1)
+            
+        mu, sigma = self.encode(x)
+        
+        epsilon = torch.randn_like(sigma)
+        z_reparametrized = mu + sigma * epsilon
+        x_reconstructed = self.decode(z_reparametrized)
+        
+        return x_reconstructed, mu, sigma
+    
+    # Method for generating new images during inference
+    def sample(self, num_samples=1, device="cpu"):
+        z = torch.randn(num_samples, self.z_dim).to(device)
+        samples = self.decode(z)
+        return samples
     
 
-
-def load_vae_models(ckpt_path, device="cuda"):
-    checkpoint = torch.load(ckpt_path, map_location=device)
-
-    encoder = VAE_Encoder().to(device)
-    decoder = VAE_Decoder().to(device)
-
-    encoder.load_state_dict(checkpoint["encoder"], strict=True)
-    decoder.load_state_dict(checkpoint["decoder"], strict=True)
-
-    return encoder, decoder
