@@ -1,6 +1,4 @@
 from clip import CLIP
-from encoder import VAE_Encoder_Optimized as VAE_Encoder
-from decoder import VAE_Decoder_Optimized as VAE_Decoder
 from diffusion import Diffusion
 
 import model_converter
@@ -58,6 +56,8 @@ def convert_vae_state_dict(state_dict):
     
     return state_dict
 
+TESTING = False
+
 def load_vae_models(vae_checkpoint_path, device="cuda"):
     try:
         checkpoint = torch.load(vae_checkpoint_path, map_location=device, weights_only=True)
@@ -71,6 +71,15 @@ def load_vae_models(vae_checkpoint_path, device="cuda"):
         except Exception:
             print("Warning: Loading checkpoint with weights_only=False. Only do this if you trust the source of this file.")
             checkpoint = torch.load(vae_checkpoint_path, map_location=device, weights_only=False)
+    
+
+    
+    if TESTING:
+        from encoder import VAE_Encoder_Optimized as VAE_Encoder
+        from decoder import VAE_Decoder_Optimized as VAE_Decoder
+    else:
+        from encoder import VAE_Encoder
+        from decoder import VAE_Decoder
     
     encoder = VAE_Encoder().to(device)
     decoder = VAE_Decoder().to(device)
@@ -127,11 +136,17 @@ def preload_models_from_standard_weights(ckpt_path, vae_checkpoint_path=None, at
         encoder, decoder = load_vae_models(vae_checkpoint_path, device)
 
     else:
+        if TESTING:
+            from encoder import VAE_Encoder_Optimized as VAE_Encoder
+            from decoder import VAE_Decoder_Optimized as VAE_Decoder
+        else:
+            from encoder import VAE_Encoder
+            from decoder import VAE_Decoder
         encoder = VAE_Encoder().to(device)
-        encoder.load_state_dict(state_dict["encoder"], strict=False)
+        encoder.load_state_dict(state_dict["encoder"], strict=True)
 
         decoder = VAE_Decoder().to(device)
-        decoder.load_state_dict(state_dict["decoder"], strict=False)
+        decoder.load_state_dict(state_dict["decoder"], strict=True)
         
     vae_model = VAE(encoder, decoder)
 
