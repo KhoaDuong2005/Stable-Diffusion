@@ -93,7 +93,7 @@ class VAE_Decoder_Optimized(nn.Module):
                 OptimizedBlock(512, 512),
                 OptimizedBlock(512, 512),
                 OptimizedBlock(512, 512),
-                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Upsample(scale_factor=2),
                 nn.Conv2d(512, 512, kernel_size=3, padding=1)
             ),
             
@@ -102,7 +102,7 @@ class VAE_Decoder_Optimized(nn.Module):
                 OptimizedBlock(512, 512),
                 OptimizedBlock(512, 512),
                 OptimizedBlock(512, 256),
-                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Upsample(scale_factor=2),
                 nn.Conv2d(256, 256, kernel_size=3, padding=1)
             ),
             
@@ -111,7 +111,7 @@ class VAE_Decoder_Optimized(nn.Module):
                 OptimizedBlock(256, 256),
                 OptimizedBlock(256, 256),
                 OptimizedBlock(256, 128),
-                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Upsample(scale_factor=2),
                 nn.Conv2d(128, 128, kernel_size=3, padding=1)
             )
         ])
