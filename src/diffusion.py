@@ -70,6 +70,12 @@ class UNET_AttentionBlock(nn.Module):
             from attention import SelfAttention, CrossAttention
             self.attention_1 = SelfAttention(n_heads, channels, in_proj_bias=False)
             self.attention_2 = CrossAttention(n_heads, channels, d_prompt, in_proj_bias=False)
+        elif attention_type == "default":
+            print("Using default attention for UNET")
+            from attention import SelfAttention, CrossAttention
+            self.attention_1 = SelfAttention(n_heads, channels, in_proj_bias=False)
+            self.attention_2 = CrossAttention(n_heads, channels, d_prompt, in_proj_bias=False)
+            
         else:
             raise ValueError(f"Unknown attention type: {attention_type}. Must be 'flashattention' or 'xformers'")
 

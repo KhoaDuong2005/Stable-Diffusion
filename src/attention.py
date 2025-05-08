@@ -6,7 +6,7 @@ import math
 try:
     import xformers.ops
     from xformers.ops.fmha.attn_bias import LowerTriangularMask
-    XFORMERS_AVAILABLE = True
+    XFORMERS_AVAILABLE = False
 
 except ImportError:
     XFORMERS_AVAILABLE = False

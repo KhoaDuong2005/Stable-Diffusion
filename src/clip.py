@@ -34,6 +34,11 @@ class CLIPLayer(nn.Module):
             if DEBUG_MODE:
                 print("Using flash attention for CLIP")
             self.attention = FlashSelfAttention(n_heads, n_embeddings)
+        elif attention_type == "default":
+            from attention import SelfAttention
+            if DEBUG_MODE:
+                print("Using default attention for CLIP")
+            self.attention = SelfAttention(n_heads, n_embeddings)
 
         
         self.layernorm_2 = nn.LayerNorm(n_embeddings)
